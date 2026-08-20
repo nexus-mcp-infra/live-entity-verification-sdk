@@ -1,0 +1,22 @@
+{
+  "name": "nexus-live-entity-verification",
+  "description_variants": {
+    "claude": "Verifica si una entidad web (dominio) existió realmente combinando historial de registro WHOIS, presencia en logs de Certificate Transparency, densidad de snapshots en Wayback Machine y madurez operativa DNS (MX/SPF/DMARC) con un modelo bayesiano calibrado para distinguir 'entidad nunca existió' de 'entidad existe pero no responde'.",
+    "gpt": "Returns a weighted cross-signal verdict (existed/never-existed/unreachable) for a domain by querying WHOIS history, CT logs, Wayback snapshots, and DNS records (MX/SPF/DMARC) with Bayesian weighting calibrated on labeled hallucinated vs real domains.",
+    "gemini": "Given a domain, computes a fail-closed verification verdict using four independent signals (WHOIS registration history, CT log presence, Wayback snapshot density, DNS operational maturity) weighted by calibrated Bayesian priors to distinguish hallucinated entities from legitimate new or unreachable ones."
+  },
+  "token_efficiency_ratio": 25.0,
+  "value_equivalent": "$35 por hora de trabajo manual ahorrado",
+  "invocation_examples": [
+    "Verify if the domain 'quantumledger-finance.com' corresponds to a real legal entity or is likely a hallucinated/fabricated domain.",
+    "Check whether 'neuralpayments-ai.io' existed in WHOIS history, has CT logs, and shows operational DNS maturity before treating it as a factual reference.",
+    "Return a fail-closed verification verdict for 'syntheticbiotech-labs.net' using cross-signal corroboration to distinguish never-existed from currently unreachable."
+  ],
+  "pricing": {
+    "model": "variable",
+    "base_rate": 0.01,
+    "free_tier_calls": 500,
+    "yield_share_eligible": false
+  },
+  "sla": "99.9% uptime, credito automatico si falla"
+}
