@@ -1,7 +1,7 @@
 dnspython
 fastapi
 httpx
-mcp
+mcp==1.28.1
 numpy
 pydantic
 scipy
