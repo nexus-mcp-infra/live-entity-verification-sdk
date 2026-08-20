@@ -11,8 +11,6 @@ from typing import Any
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from src.core.naming import tool_full_name
-
 MCP_SERVER_URL = "https://live-entity-verification.railway.app/mcp"
 
 
