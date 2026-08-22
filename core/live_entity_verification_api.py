@@ -1873,9 +1873,14 @@ async def _nexus_lev_agent_card() -> dict:
                 "purposes; A2A-conformant task orchestration is not implemented."
             ),
             "billing_note": (
-                "No x402 or API-key gate as of this writing (confirmed against the "
-                "real deployed openapi.json: no securitySchemes, no per-operation "
-                "security). All 5 business operations are currently free to call."
+                "Charged via x402 (Base Sepolia TESTNET, not real funds) since "
+                "2026-08-22 -- $0.05/call for the fused cross-signal endpoint, "
+                "$0.02 for the WHOIS-timeline endpoint (passes through real paid "
+                "WHOIS spend), $0.01 for the single-signal CT/Wayback/DNS endpoints. "
+                "Payment settles before the handler runs, at the ASGI middleware "
+                "layer ahead of request validation -- a call is charged even if it "
+                "returns a non-VERIFIED verdict or a 400/422. The MCP tool surface "
+                "at /mcp is currently free (in-process call, not re-metered)."
             ),
         },
     }
@@ -1916,6 +1921,116 @@ No authentication or payment is currently required on the 5 business endpoints b
 async def _nexus_lev_llms_txt():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(content=_NEXUS_LEV_LLMS_TXT_CONTENT, media_type="text/plain; charset=utf-8")
+
+
+# --- NEXUS: x402 pay-per-call (Base Sepolia testnet) -- added 2026-08-22 ---
+# Motor ya validado en produccion via agent-verification-api (candidato #3).
+# Ver docstring de patch_x402_live_entity_verification.py para el razonamiento
+# completo de pricing por ruta.
+import sys as _nexus_sys
+
+from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.http.types import RouteConfig
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
+from x402.schemas import Network
+from x402.server import x402ResourceServer
+from fastapi.openapi.utils import get_openapi as _nexus_lev_fastapi_get_openapi
+
+_NEXUS_X402_FREE_MODE = os.getenv("NEXUS_X402_FREE_MODE", "false").strip().lower() == "true"
+
+_X402_EVM_ADDRESS = os.getenv("X402_WALLET_ADDRESS", "0xYOUR_WALLET_ADDRESS_HERE")
+_X402_NETWORK: "Network" = "eip155:84532"  # Base Sepolia testnet
+
+_looks_like_evm_address = (
+    _X402_EVM_ADDRESS.startswith("0x")
+    and len(_X402_EVM_ADDRESS) == 42
+    and all(c in "0123456789abcdefABCDEF" for c in _X402_EVM_ADDRESS[2:])
+)
+if not _NEXUS_X402_FREE_MODE and not _looks_like_evm_address:
+    print(
+        f"[WARN] X402_WALLET_ADDRESS ({_X402_EVM_ADDRESS!r}) doesn't look like a real "
+        "EVM address (expected '0x' + 40 hex chars). The server will still boot and "
+        "issue 402 challenges, but payments will have nowhere real to settle.",
+        file=_nexus_sys.stderr,
+    )
+
+# Precio por ruta -- ver docstring del patch script para el razonamiento completo.
+_NEXUS_LEV_X402_ROUTE_PRICES = {
+    "POST /verify-entity-existence-cross-signal": "$0.05",
+    "POST /resolve-whois-registration-timeline": "$0.02",
+    "POST /probe-certificate-transparency-presence": "$0.01",
+    "POST /measure-wayback-snapshot-density": "$0.01",
+    "POST /audit-dns-operational-maturity": "$0.01",
+}
+
+_x402_facilitator = HTTPFacilitatorClient(FacilitatorConfig(url="https://x402.org/facilitator"))
+_x402_server = x402ResourceServer(_x402_facilitator)
+_x402_server.register(_X402_NETWORK, ExactEvmServerScheme())
+# _nexus_register_x402_revenue_logging ya esta definida mas arriba (emitida por
+# el generador para todo asset nuevo, sin usar hasta este patch) -- engancha
+# _nexus_log_x402_revenue_event a x402_server.on_after_settle().
+_nexus_register_x402_revenue_logging(_x402_server)
+
+# _NEXUS_X402_ROUTES / _NEXUS_X402_PRICE: mismos nombres que
+# _nexus_log_mcp_call_event ya lee via globals() para poblar
+# mcp_call_events.price_charged (proxy informativo -- los tools MCP de este
+# asset siguen sin cobrar, mismo "known limitation" que el resto de los assets
+# manuales: la llamada MCP->core es in-process, no vuelve a pasar por
+# PaymentMiddlewareASGI).
+_NEXUS_X402_ROUTES: dict = {
+    route_key: RouteConfig(
+        accepts=[PaymentOption(scheme="exact", pay_to=_X402_EVM_ADDRESS, price=price, network=_X402_NETWORK)],
+        mime_type="application/json",
+        description=route_key,
+    )
+    for route_key, price in _NEXUS_LEV_X402_ROUTE_PRICES.items()
+}
+_NEXUS_X402_PRICE = _NEXUS_LEV_X402_ROUTE_PRICES["POST /verify-entity-existence-cross-signal"]
+
+if not _NEXUS_X402_FREE_MODE:
+    app.add_middleware(PaymentMiddlewareASGI, routes=_NEXUS_X402_ROUTES, server=_x402_server)
+
+
+def _nexus_lev_openapi_with_payment_info():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = _nexus_lev_fastapi_get_openapi(
+        title=app.title, version=app.version, description=app.description, routes=app.routes
+    )
+    if not _NEXUS_X402_FREE_MODE:
+        for route_key, price in _NEXUS_LEV_X402_ROUTE_PRICES.items():
+            method, path = route_key.split(" ", 1)
+            op = schema.get("paths", {}).get(path, {}).get(method.lower())
+            if op is None:
+                continue
+            op["x-payment-info"] = {
+                "price": {"mode": "fixed", "currency": "USD", "amount": price.lstrip("$")},
+                "protocols": [{"x402": {}}],
+            }
+            op.setdefault("responses", {})["402"] = {"description": "Payment Required"}
+    schema.setdefault("info", {})["contact"] = {"email": "dasaanrod@gmail.com"}
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _nexus_lev_openapi_with_payment_info
+
+
+# --- NEXUS: 402index.io domain claim verification file ---
+# POST /api/v1/claim (domain=live-entity-verification-production.up.railway.app,
+# 2026-08-22) pide este archivo estatico con el hash exacto, sin espacios ni
+# saltos de linea extra. verification_token persistido en memoria
+# live_entity_verification_x402_2026_08_22 (nunca se guarda en ningun otro
+# lado -- ver skills/x402-payments, revoke lo requiere y si se pierde el
+# listado queda sin forma de auto-revocarse).
+_NEXUS_402INDEX_VERIFY_HASH = "316108447874f27c28169896b53320ed5c090fa0c91a5ebebe8ad8417cd5bc01"
+
+
+@app.get("/.well-known/402index-verify.txt", include_in_schema=False)
+async def _nexus_lev_402index_verify():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=_NEXUS_402INDEX_VERIFY_HASH)
 
 
 app.mount("/", _nexus_mcp_asgi_app)
