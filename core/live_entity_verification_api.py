@@ -2033,4 +2033,18 @@ async def _nexus_lev_402index_verify():
     return PlainTextResponse(content=_NEXUS_402INDEX_VERIFY_HASH)
 
 
+# --- NEXUS: favicon real (x402scan lo pide junto con agent-card.json) ---
+import base64 as _nexus_lev_base64
+
+_NEXUS_LEV_FAVICON_PNG = _nexus_lev_base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def _nexus_lev_favicon():
+    from fastapi.responses import Response
+    return Response(content=_NEXUS_LEV_FAVICON_PNG, media_type="image/png")
+
+
 app.mount("/", _nexus_mcp_asgi_app)
