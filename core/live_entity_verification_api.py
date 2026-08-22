@@ -36,9 +36,33 @@ _PRIOR_CT_ABSENT  = (5.0, 28.0)
 _PRIOR_WAYBACK_PRESENT = (33.0, 6.0)
 _PRIOR_WAYBACK_ABSENT  = (7.0, 24.0)
 
-# DNS maturity: P(real | dns_mature), P(real | dns_immature)
+# DNS maturity: P(real | dns_mature). Spec has no negative tier for DNS
+# (candidato-verificacion-entidad-en-vivo.md, tabla lineas 78-83 -- DNS row
+# has a dash for -1), so there is no "immature" prior: immature falls
+# through to _PRIOR_WEAK_NEUTRAL below, same as every other signal's
+# neutral tier.
 _PRIOR_DNS_MATURE   = (22.0, 8.0)    # weaker standalone signal per spec
-_PRIOR_DNS_IMMATURE = (9.0, 19.0)
+
+# --- PATCH bayesian_fusion_weak_vs_absent ---
+# Fix 2026-08-22: the 4 fetchers below each collapse a graded signal (age,
+# cert span/count, snapshot count/span, DNS component set) into a single
+# present/absent boolean before fusion -- so a domain with the thinnest
+# possible evidence (e.g. registered 12 days ago, 1 CT cert issued
+# yesterday) got the SAME strong-positive prior as a decade-old company.
+# These two priors add the missing "weak/neutral" tier from the spec's
+# rubric (calibrated 2026-08-20, candidato-verificacion-entidad-en-vivo.md
+# lines 78-83): present-but-thin evidence should not pull the posterior
+# either direction, not get folded into "strong positive".
+#
+# (12, 12) -> mean exactly 0.5: contributes zero net evidence in log-space.
+_PRIOR_WEAK_NEUTRAL = (12.0, 12.0)
+# WHOIS-specific: registered but <90 days old. Spec rubric marks this as
+# -1 (real risk signal), but it is NOT the same as "not registered" --
+# that case already short-circuits via the fail-hard whois_no_record path
+# above and never reaches this prior. Reusing _PRIOR_WHOIS_ABSENT here
+# would repeat the same present/absent conflation in the other direction
+# (treating "young" as if it were "doesn't exist").
+_PRIOR_WHOIS_YOUNG = (7.0, 15.0)  # mild negative, mean ~0.318
 
 # Evidence quality threshold for VERIFIED_LIVE verdict
 _EVIDENCE_QUALITY_THRESHOLD = 0.72
@@ -848,11 +872,26 @@ async def verify_entity_existence_cross_signal(req: VerifyEntityRequest) -> dict
         else:
             whois_present = w.get('present', False)
             whois_absent = not whois_present
-            weight = _bayesian_signal_weight(
-                *_PRIOR_WHOIS_PRESENT, *_PRIOR_WHOIS_ABSENT, whois_present
+            # --- PATCH bayesian_fusion_weak_vs_absent ---
+            age_days = w.get('age_days')
+            if not whois_present:
+                whois_tier = 'negative'
+            elif age_days is not None and age_days < 90:
+                whois_tier = 'young'
+            elif age_days is not None and age_days > 730:
+                whois_tier = 'strong'
+            else:
+                # 90-730 dias, o edad desconocida pero dominio registrado:
+                # evidencia real pero no concluyente.
+                whois_tier = 'weak'
+            weight = (
+                _beta_mean(*_PRIOR_WHOIS_PRESENT) if whois_tier == 'strong' else
+                _beta_mean(*_PRIOR_WHOIS_YOUNG) if whois_tier == 'young' else
+                _beta_mean(*_PRIOR_WHOIS_ABSENT) if whois_tier == 'negative' else
+                _beta_mean(*_PRIOR_WEAK_NEUTRAL)
             )
             signals_evaluated['whois'] = weight
-            if whois_present:
+            if whois_tier == 'strong':
                 positive_signals.append('whois')
 
     if 'ct' in results:
@@ -860,12 +899,31 @@ async def verify_entity_existence_cross_signal(req: VerifyEntityRequest) -> dict
         if 'error_code' in c and not c.get('present', False):
             signals_missing.append('ct')
         else:
-            ct_present = c.get('present', False)
-            weight = _bayesian_signal_weight(
-                *_PRIOR_CT_PRESENT, *_PRIOR_CT_ABSENT, ct_present
+            # --- PATCH bayesian_fusion_weak_vs_absent ---
+            cert_count = c.get('certificate_count', 0) or 0
+            earliest = c.get('earliest_issuance')
+            ct_span_days = None
+            if earliest:
+                try:
+                    earliest_dt = datetime.fromisoformat(earliest.replace('Z', '+00:00'))
+                    if earliest_dt.tzinfo is None:
+                        earliest_dt = earliest_dt.replace(tzinfo=timezone.utc)
+                    ct_span_days = (datetime.now(timezone.utc) - earliest_dt).days
+                except Exception:
+                    ct_span_days = None
+            if cert_count <= 0:
+                ct_tier = 'negative'
+            elif ct_span_days is not None and ct_span_days >= 365:
+                ct_tier = 'strong'
+            else:
+                ct_tier = 'weak'
+            weight = (
+                _beta_mean(*_PRIOR_CT_PRESENT) if ct_tier == 'strong' else
+                _beta_mean(*_PRIOR_CT_ABSENT) if ct_tier == 'negative' else
+                _beta_mean(*_PRIOR_WEAK_NEUTRAL)
             )
             signals_evaluated['ct'] = weight
-            if ct_present:
+            if ct_tier == 'strong':
                 positive_signals.append('ct')
 
     if 'wayback' in results:
@@ -873,12 +931,29 @@ async def verify_entity_existence_cross_signal(req: VerifyEntityRequest) -> dict
         if 'error_code' in wb and not wb.get('present', False):
             signals_missing.append('wayback')
         else:
-            wb_present = wb.get('present', False)
-            weight = _bayesian_signal_weight(
-                *_PRIOR_WAYBACK_PRESENT, *_PRIOR_WAYBACK_ABSENT, wb_present
+            # --- PATCH bayesian_fusion_weak_vs_absent ---
+            snapshot_count = wb.get('total_snapshots', 0) or 0
+            first = wb.get('first_snapshot_date')
+            last = wb.get('last_snapshot_date')
+            wb_span_days = None
+            if first and last:
+                try:
+                    wb_span_days = (datetime.fromisoformat(last) - datetime.fromisoformat(first)).days
+                except Exception:
+                    wb_span_days = None
+            if snapshot_count <= 0:
+                wb_tier = 'negative'
+            elif snapshot_count >= 5 and (wb_span_days or 0) >= 180:
+                wb_tier = 'strong'
+            else:
+                wb_tier = 'weak'
+            weight = (
+                _beta_mean(*_PRIOR_WAYBACK_PRESENT) if wb_tier == 'strong' else
+                _beta_mean(*_PRIOR_WAYBACK_ABSENT) if wb_tier == 'negative' else
+                _beta_mean(*_PRIOR_WEAK_NEUTRAL)
             )
             signals_evaluated['wayback'] = weight
-            if wb_present:
+            if wb_tier == 'strong':
                 positive_signals.append('wayback')
 
     if 'dns' in results:
@@ -886,9 +961,13 @@ async def verify_entity_existence_cross_signal(req: VerifyEntityRequest) -> dict
         if 'error_code' in d and not d.get('present', False):
             signals_missing.append('dns')
         else:
+            # --- PATCH bayesian_fusion_weak_vs_absent ---
+            # No negative tier for DNS per spec (dash in the rubric row) --
+            # immature DNS is neutral, never a mark against the domain.
             dns_mature = d.get('is_mature', False)
-            weight = _bayesian_signal_weight(
-                *_PRIOR_DNS_MATURE, *_PRIOR_DNS_IMMATURE, dns_mature
+            weight = (
+                _beta_mean(*_PRIOR_DNS_MATURE) if dns_mature
+                else _beta_mean(*_PRIOR_WEAK_NEUTRAL)
             )
             signals_evaluated['dns'] = weight
             if dns_mature:
