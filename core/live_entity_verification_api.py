@@ -1723,4 +1723,120 @@ async def _nexus_stripe_webhook(request: _NexusStripeRequest):
     )
 
 
+# --- NEXUS: A2A Agent Card (spec v0.3.0/v1.0) para discovery ---
+# Mismo patron ya usado en similarity-search-api/ws. Debe registrarse
+# ANTES del app.mount("/", ...) de mas abajo: Starlette matchea rutas en
+# el orden en que se agregan a app.routes, y un Mount en "/" intercepta
+# cualquier path si se agrega primero.
+@app.get("/.well-known/agent-card.json", include_in_schema=False)
+async def _nexus_lev_agent_card() -> dict:
+    return {
+        "name": "Live Entity Verification API",
+        "description": (
+            "Cross-signal Bayesian corroboration of entity existence. "
+            "Combines WHOIS, Certificate Transparency, Wayback Machine, "
+            "and DNS operational maturity into a calibrated hallucination verdict."
+        ),
+        "url": "https://live-entity-verification-production.up.railway.app",
+        "version": "1.0.0",
+        "documentationUrl": "https://live-entity-verification-production.up.railway.app/docs",
+        "provider": {
+            "organization": "nexus-mcp-infra",
+            "url": "https://github.com/nexus-mcp-infra/live-entity-verification-sdk",
+        },
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": False,
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "additionalInterfaces": [
+            {"url": "https://live-entity-verification-production.up.railway.app/mcp", "transport": "MCP"},
+        ],
+        "skills": [
+            {
+                "id": "verify_entity_existence_cross_signal",
+                "name": "Cross-Signal Entity Existence Verification",
+                "description": "Fuses WHOIS, CT, Wayback, and DNS signals with Bayesian calibrated weights. Returns corroborated existence verdict, hallucination probability, and failure mode classification. Fail-closed: insufficient corroboration returns a blocking verdict rather than an ambiguous null.",
+                "tags": ["entity-verification", "hallucination-detection", "bayesian"],
+            },
+            {
+                "id": "resolve_whois_registration_timeline",
+                "name": "WHOIS Registration Timeline Resolver",
+                "description": "Resolves WHOIS registration timeline. Returns creation, expiration, updated dates, registrar, registrant country, age in days, and historical registrant count where available.",
+                "tags": ["whois", "domain-age"],
+            },
+            {
+                "id": "probe_certificate_transparency_presence",
+                "name": "Certificate Transparency Presence Probe",
+                "description": "Searches crt.sh CT logs for certificates issued for a domain. Computes certificate count, issuance date range, unique issuers, subdomain count, and continuity score.",
+                "tags": ["certificate-transparency", "crt.sh"],
+            },
+            {
+                "id": "measure_wayback_snapshot_density",
+                "name": "Wayback Snapshot Density Meter",
+                "description": "Measures Wayback Machine CDX snapshot density over a lookback window. Returns total snapshots, first/last dates, snapshots per year, density score, and coverage gaps in months.",
+                "tags": ["wayback-machine", "cdx"],
+            },
+            {
+                "id": "audit_dns_operational_maturity",
+                "name": "DNS Operational Maturity Auditor",
+                "description": "Audits DNS operational maturity: MX, SPF, DMARC, DKIM selectors, NS record count, and propagation consistency across resolvers. Returns maturity score and component signals. DNS maturity alone is not sufficient for a VERIFIED_LIVE verdict per the cross-signal spec.",
+                "tags": ["dns", "spf", "dmarc", "dkim"],
+            },
+        ],
+        "metadata": {
+            "protocol_note": (
+                "This service implements the Model Context Protocol (MCP) at /mcp, "
+                "not A2A's own JSONRPC/gRPC/HTTP+JSON task methods (message/send, "
+                "tasks/get, etc.). This Agent Card is provided for discovery/indexing "
+                "purposes; A2A-conformant task orchestration is not implemented."
+            ),
+            "billing_note": (
+                "No x402 or API-key gate as of this writing (confirmed against the "
+                "real deployed openapi.json: no securitySchemes, no per-operation "
+                "security). All 5 business operations are currently free to call."
+            ),
+        },
+    }
+
+
+# --- PATCH llms_txt_live_entity_verification ---
+# Sirve llms.txt real, grounded contra el openapi.json real del deploy --
+# mismo patron ya usado en similarity-search-api.
+_NEXUS_LEV_LLMS_TXT_CONTENT = '''# Live Entity Verification API
+
+> Cross-signal Bayesian corroboration of entity existence. Combines WHOIS, Certificate Transparency, Wayback Machine, and DNS operational maturity into a calibrated hallucination verdict -- built to catch cases like a data source or company that was never real (fabricated by an upstream LLM) before an agent acts on it as fact.
+
+Base URL: https://live-entity-verification-production.up.railway.app
+
+No authentication or payment is currently required on the 5 business endpoints below (confirmed against the live openapi.json -- no securitySchemes, no x402 gate).
+
+## Endpoints
+
+- [POST /verify-entity-existence-cross-signal](https://live-entity-verification-production.up.railway.app/verify-entity-existence-cross-signal): Fuses WHOIS, CT, Wayback, and DNS signals with Bayesian calibrated weights into a corroborated existence verdict, hallucination probability, and failure mode classification. Fail-closed on insufficient corroboration.
+- [POST /resolve-whois-registration-timeline](https://live-entity-verification-production.up.railway.app/resolve-whois-registration-timeline): Resolves WHOIS registration timeline (creation/expiration/updated dates, registrar, registrant country, age in days).
+- [POST /probe-certificate-transparency-presence](https://live-entity-verification-production.up.railway.app/probe-certificate-transparency-presence): Searches crt.sh CT logs for certificates issued for a domain.
+- [POST /measure-wayback-snapshot-density](https://live-entity-verification-production.up.railway.app/measure-wayback-snapshot-density): Measures Wayback Machine CDX snapshot density over a lookback window.
+- [POST /audit-dns-operational-maturity](https://live-entity-verification-production.up.railway.app/audit-dns-operational-maturity): Audits DNS operational maturity (MX/SPF/DMARC/DKIM/NS).
+
+## MCP
+
+- [MCP endpoint](https://live-entity-verification-production.up.railway.app/mcp): Same 5 business operations exposed as MCP tools over streamable HTTP.
+- [Agent Card](https://live-entity-verification-production.up.railway.app/.well-known/agent-card.json): A2A-style agent card describing the exposed skills.
+
+## Optional
+
+- [OpenAPI spec](https://live-entity-verification-production.up.railway.app/openapi.json): Full machine-readable schema.
+- [Source (SDK repo)](https://github.com/nexus-mcp-infra/live-entity-verification-sdk): README with request/response examples.
+'''
+
+
+@app.get("/llms.txt", include_in_schema=False)
+async def _nexus_lev_llms_txt():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(content=_NEXUS_LEV_LLMS_TXT_CONTENT, media_type="text/plain; charset=utf-8")
+
+
 app.mount("/", _nexus_mcp_asgi_app)
